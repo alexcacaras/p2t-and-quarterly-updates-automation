@@ -59,7 +59,7 @@ NOTIFICATION_CATEGORIES = ["ADMINISTRATORS", "CONTRACTORS", "DEFAULT"]
 
 # Build a unique persistent profile dir per instance (and user)
 parsed = urlparse(INSTANCE_URL)
-host = (parsed.hostname or "fusion").replace(".", "-")  # e.g., ejvv-test-fa-us6-oraclecloud-com
+host = (parsed.hostname or "fusion").replace(".", "-")  
 user = FUSION_USER.split("@")[0] if "@" in FUSION_USER else FUSION_USER or "user"
 PROFILE_DIR = f".pw-profile-{host}-{user}"
 
@@ -471,7 +471,7 @@ def run(playwright: Playwright) -> None:
     # Handle the Email Textbox
     page1.get_by_role("textbox", name="Test Notification Email").click()
     page1.get_by_role("textbox", name="Test Notification Email").press("ControlOrMeta+a")
-    page1.get_by_role("textbox", name="Test Notification Email").fill("Oracle@sunnyvale.ca.gov")
+    page1.get_by_role("textbox", name="Test Notification Email").fill("Oracle@oracle.com")
     take_screenshot(page1, "notification_email_filled")
 
     # Click OK on the email popup

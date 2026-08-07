@@ -397,7 +397,7 @@ def run() -> int:
                 continue
 
             for i, row in enumerate(rows, start=1):
-                login = pick_login_from_row(row)   # e.g., 'sjangala@novamodus.com'
+                login = pick_login_from_row(row)   
                 client = get_client(login)
                 logger.info(f"[{login}] {xlsx.name} row {i} selected account")
 

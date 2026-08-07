@@ -1,4 +1,4 @@
-SUNNYVALE ESS JOBS
+ESS JOBS
 Master README & Setup Guide
 **Update August 2026 1.0.4 not complete yet for email notification**
 Updated July 2026
@@ -173,7 +173,7 @@ The master key is a single string that encrypts and decrypts your credentials. I
 3.1  Generate a New Key (if you don't have one)
 Open a terminal and run:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-This prints a key like: WQJEZp_jVlLVAvKUe-3rEv9N6-Z1bDWv0nYYCf_2ARY=
+This prints a key like: blahblahblah4647483
 Copy it — you will need it in the next step and to give to any other user who runs these scripts.
 
 3.2  Set the Key Permanently in Windows
@@ -187,7 +187,7 @@ It should print your key back. The 'User' scope means it persists for your Windo
 At any point you can confirm the key is active in the current PowerShell session:
 echo $env:ENV_MASTER_KEY
 
-3.4  Giving the Key to Another User (e.g. Stella)
+3.4  Giving the Key to Another User (e.g. ADMIN)
 Copy your key string and have them run the same PowerShell command above on their machine. They must use the exact same key — a different key cannot decrypt your .env.encrypted file.
 NOTE: Keep the key somewhere safe (e.g., a password manager). If you lose it you cannot recover the encrypted file and must re-create the .env from scratch and re-encrypt.
 
@@ -195,14 +195,14 @@ NOTE: Keep the key somewhere safe (e.g., a password manager). If you lose it you
 Before encrypting you need a .env file in the project root with the following variables:
 
 Variable	Description
-FUSION_BASEURL	Oracle Fusion base URL, e.g. https://ejvv-test.fa.us6.oraclecloud.com
-FUSION_USER_RESETTER	Email/username of the account that resets passwords (e.g. Stella or sdayanathan). Must have IT Security Manager role.
+FUSION_BASEURL	Oracle Fusion base URL, e.g. https://blank.oraclecloud.com
+FUSION_USER_RESETTER	Email/username of the account that resets passwords . Must have IT Security Manager role.
 FUSION_PASS_RESETTER	Password for the resetter account above.
-FUSION_hcm_LOGIN	HCM scheduler account username (SUN_JOB_HCM_Scheduler).
+FUSION_hcm_LOGIN	HCM scheduler account username (JOB_HCM_Scheduler).
 FUSION_hcm_PASSWORD	HCM scheduler account password.
-FUSION_fin_LOGIN	FIN scheduler account username (SUN_JOB_FIN_Scheduler).
+FUSION_fin_LOGIN	FIN scheduler account username (JOB_FIN_Scheduler).
 FUSION_fin_PASSWORD	FIN scheduler account password.
-FUSION_it_LOGIN	IT scheduler account username (SUN_Job_IT_Scheduler).
+FUSION_it_LOGIN	IT scheduler account username (Job_IT_Scheduler).
 FUSION_it_PASSWORD	IT scheduler account password.
 FUSION_USERS	Comma-separated list of aliases for main.py multi-user support, e.g. hcm,fin,it
 FUSION_USER	Username for main_ui_auto.py browser login.
@@ -396,13 +396,13 @@ screenshot_cleanup.py:          	Deletes old screenshots by age and count. Can b
 
 10.  Required Oracle Roles Per Account
 Account	Required Oracle Role(s)
-FUSION_USER_RESETTER (e.g. Stella)	IT Security Manager — to reset passwords via SCIM API.
+FUSION_USER_RESETTER (e.g. ADMIN)	IT Security Manager — to reset passwords via SCIM API.
 Manage Data Access — to post data security records (if also used for data access).
-SUN_Job_IT_Scheduler (FUSION_it)	Upload data for Human Capital Management file based import — for HDL loads.
+Job_IT_Scheduler (FUSION_it)	Upload data for Human Capital Management file based import — for HDL loads.
 ESS Adhoc Request Submission — for submitting LDAP ESS job.
 Manage Data Access — for posting data security records.
-SUN_JOB_HCM_Scheduler (FUSION_hcm)	ESS Adhoc Request Submission — for submitting HCM ESS jobs from main.py.
-SUN_JOB_FIN_Scheduler (FUSION_fin)	ESS Adhoc Request Submission — for submitting FIN ESS jobs from main.py.
+JOB_HCM_Scheduler (FUSION_hcm)	ESS Adhoc Request Submission — for submitting HCM ESS jobs from main.py.
+JOB_FIN_Scheduler (FUSION_fin)	ESS Adhoc Request Submission — for submitting FIN ESS jobs from main.py.
 
 11.  Log Files Reference
 Log File	                            What It Contains

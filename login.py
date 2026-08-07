@@ -1,5 +1,5 @@
 """
-Sunnyvale ESS — UI login handling.
+— UI login handling.
 
 Consolidated from the multi-client login page objects and flattened for this
 project's flat layout. Supports the standard Oracle Cloud login and IDCS, with
