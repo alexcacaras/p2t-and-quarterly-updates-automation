@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sunnyvale-ess-jobs"
+version = "0.1.0"
+description = "ESS job runner for Oracle Fusion from Excel"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "openpyxl>=3.1.5",
+    "python-dotenv>=1.1.1",
+    "requests>=2.32.4",
+]
+
+# We ship single-file modules sitting at the project root.
+# This makes `import fusion_api` work after an editable install.
+[tool.setuptools]
+py-modules = ["fusion_api", "logger", "get_job_details", "job_config", "main"]
+
+# Optional convenience scripts so you can run things without 'python main.py'
+[project.scripts]
+ess-run = "main:run"
+ess-get-job-details = "get_job_details:main"

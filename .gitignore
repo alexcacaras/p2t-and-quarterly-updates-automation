@@ -1,0 +1,78 @@
+# ============================================================
+#  SECRETS / CREDENTIALS  — never commit these
+# ============================================================
+.env
+.env.encrypted
+.env.*
+!.env.example
+*.key
+*.pem
+ENV_MASTER_KEY*
+master.key
+
+# ============================================================
+#  PLAYWRIGHT BROWSER PROFILES  — contain LIVE login sessions
+#  (cookies that authenticate as the scheduler accounts). NEVER commit.
+# ============================================================
+.pw-profile/
+.pw-profile-*/
+*storage_state*.json
+auth.json
+
+# Playwright hex-named scratch files (e.g. 4869D000)
+[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]
+
+# ============================================================
+#  DATA FILES  — may hold usernames, roles, PII
+#  Ignored by default; force-add templates with:  git add -f <file>
+# ============================================================
+*.xlsx
+*.xls
+*.XLSX
+*.csv
+!**/*template*.xlsx
+!**/*example*.xlsx
+HDLimport/*.zip
+
+# ============================================================
+#  RUNTIME OUTPUT  — regenerated, not source
+# ============================================================
+logs/
+screenshots/
+screenshots_alert_composer/
+alert_composer_reports/
+backups/
+*.log
+
+# ============================================================
+#  PYTHON
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.venv312/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ============================================================
+#  EDITOR / OS
+# ============================================================
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ============================================================
+#  SCRATCH / TEST FILES  (from this project's development)
+# ============================================================
+testt.py
+login_probe.py
+login_clean.py
+test - Copy.xlsx
+*__shadow*.xlsx
