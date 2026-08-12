@@ -11,6 +11,8 @@ from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError 
 import time # compares file modification times during cleanup
 import pathlib # used alongside Path for glob-based file scanning in cleanup
 from login import get_login_page, build_login_config
+import traceback
+from notify import send_notification
 from crypto_env import load_env_from_encrypted, get_env, _get_env_prefix # dotenv for loading env variables from .env file into python but from the encypted version
 load_env_from_encrypted()   # load .env before reading env vars from encrypted version
 ENV_PREFIX = _get_env_prefix()
@@ -475,18 +477,24 @@ def open_manage_recipients_dialog(page, template_name: str, use_xpath: bool = Fa
 # MAIN RUN
 # ---------------------------
 def run(use_xpath: bool = False):
+    errors = []
     if use_xpath:
         log_print("*** XPATH MODE — using exact input[value] matching for all templates ***")
 
     # --- SOAP PART ---
-    df = fetch_alert_report()
+    try:
+        df = fetch_alert_report()
+    except Exception as e:
+        log_print(f"SOAP report fetch failed: {e}", level="error")
+        errors.append(f"FATAL: SOAP report fetch failed: {e}")
+        return errors   
     needs_fix = get_alerts_to_fix(df)
 
     if needs_fix.empty:
         log_print("Nothing to fix, exiting.")
         cleanup_screenshots()  
         cleanup_reports()
-        return
+        return errors
 
     # --- PLAYWRIGHT PART ---
     with sync_playwright() as p:
@@ -538,6 +546,7 @@ def run(use_xpath: bool = False):
                         except (PWTimeoutError, RuntimeError) as e:
                             take_screenshot(page, f"FAILED_{template_name[:30].replace(' ', '_')}")
                             log_print(f"!!!!! Template SKIPPED: {template_name} — {e}", level="warning")
+                            errors.append(f"Template '{template_name}' (alert '{alert_name}') failed: {e}")
                             err_msg = str(e).lower()
                             dialog_was_opened = (
                                 "menu item not visible" not in err_msg
@@ -569,6 +578,7 @@ def run(use_xpath: bool = False):
                 except PWTimeoutError as e:  # outer soft-fail — skip entire alert
                     take_screenshot(page, f"FAILED_alert_{alert_name[:30].replace(' ', '_')}")
                     log_print(f"!!!!! Alert SKIPPED (timeout): {alert_name}", level="warning")
+                    errors.append(f"Alert '{alert_name}' skipped (timeout)")
                     recover_to_alerts_composer(page)
                     continue  # next alert ✓
 
@@ -578,18 +588,26 @@ def run(use_xpath: bool = False):
 
         except Exception as e:
             log_print(f" ERROR: {e}", level="error")
-            import traceback
+            errors.append("CRASHED: " + traceback.format_exc())
             traceback.print_exc()
         finally:
             cleanup_screenshots()
             cleanup_reports()
             context.close()
             browser.close()
+            return errors
 
 
 if __name__ == "__main__":
     MAX_RERUNS = 3
+    all_errors = []
     for attempt in range(MAX_RERUNS):
         log_print(f"=== RUN ATTEMPT {attempt + 1} of {MAX_RERUNS} ===")
-        run(use_xpath=FORCE_XPATH or (attempt == 2))
+        all_errors = run(use_xpath=FORCE_XPATH or (attempt == 2))
         log_print(f"=== ATTEMPT {attempt + 1} COMPLETE ===")
+
+    if all_errors:
+        crashed = any(e.startswith("FATAL") or e.startswith("CRASHED") for e in all_errors)
+        status = "TERMINATED" if crashed else "COMPLETED WITH ERRORS"
+        subject = f"[{ENV_PREFIX or 'default'}] alert_composer — {status}"
+        send_notification(subject, "\n".join(all_errors))
