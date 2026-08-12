@@ -1,6 +1,69 @@
-ESS JOBS
+(client) ESS JOBS
 Master README & Setup Guide
-**Update August 2026 1.0.4 not complete yet for email notification**
+**Update August 2026 1.0.4 Email Notifications (Error Alerts)**
+
+**What is New:**
+Each of the four P2T job categories now sends an email if any errors occur during a run. The email is sent once, after the run finishes or is terminated by a crash. A clean run with no errors sends no email. Notifications are sent via a shared notify.py module using SMTP, with all mail settings read from the encrypted .env.
+
+*1.1 What changed:*
+
+New file notify.py — one shared module with send_notification(subject, body). Reads SMTP_HOST, EMAIL_PORT, EMAIL_SENDER, EMAIL_PASSWORD, EMAIL_RECIPIENT from .env via get_env(). Builds the message with EmailMessage and sends over STARTTLS.
+Each category runner collects errors in an in-memory list (errors = []) during the run — appending both handled failures (a job not reaching SUCCEEDED, a template that could not be fixed, a skipped row) and hard crashes (caught exceptions, with traceback). At the end, if the list is non-empty, one email is sent.
+security_refresh.py — wrapped in try/finally so the email sends even when a step calls sys.exit. Steps 1 and 6 (resetpasswords, data_access_loader) now check their returned results lists explicitly, because those scripts swallow errors internally instead of raising.
+main.py — appends on non-success job status (both existing-request and new-submit paths, including the request_id), on per-row submit failures, and on per-file failures.
+new_alertcomp.py — the SOAP report fetch is wrapped so a BI Publisher failure is reported instead of crashing silently; template/alert skips are collected across all retry attempts and emailed once at the end.
+main_ui_auto.py — appends on Security Console flow failures and on a login/run crash.
+
+*1.2 Subject line — run outcome:*
+The subject reflects what kind of failure occurred, not just that one happened:
+- COMPLETED WITH ERRORS — the run finished but some items failed (e.g. some jobs did not post).
+- TERMINATED — the run could not finish (e.g. SOAP report fetch failed, login failed).
+The environment prefix and a [DRY RUN] tag (where applicable) are included, e.g. [TEST] main — COMPLETED WITH ERRORS.
+
+*1.3 .env setup:*
+Add these to .env and re-encrypt. Recipients and sender are shared (unprefixed) — all environments notify the same list. The code is provider-agnostic: switching providers is only a change of these five values, no code change.
+
+--- Gmail (current setup) ---
+SMTP_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_SENDER=<sender gmail address>
+EMAIL_PASSWORD=<Gmail app password, NOT the account password>
+EMAIL_RECIPIENT=<recipient list, comma-separated>
+
+Gmail requires an app password (the account must have 2-Step Verification on):
+1. Go to myaccount.google.com, turn on 2-Step Verification (add a phone number).
+2. Go to myaccount.google.com/apppasswords (only appears once 2-Step is on).
+3. Name it (e.g. "python"), click Create, copy the 16-character code.
+4. Put that code (spaces removed) in EMAIL_PASSWORD.
+
+--- Microsoft 365 (for production) ---
+SMTP_HOST=smtp.office365.com
+EMAIL_PORT=587
+EMAIL_SENDER=<(client) address>
+EMAIL_PASSWORD=<365 app password>
+EMAIL_RECIPIENT=<recipient list, comma-separated>
+
+365 needs TWO things enabled by a tenant admin before an app password will work — ask for BOTH:
+  (a) App passwords allowed for the sending account (tenant policy).
+  (b) SMTP AUTH (authenticated client submission) enabled on the sending mailbox.
+Enabling only (a) gives error "535 5.7.139 Authentication unsuccessful" or
+"SmtpClientAuthentication is disabled for the Mailbox".
+
+Once the admin has enabled both, generate the app password (this is the ONLY time you
+authenticate — the script then runs unattended, no MFA prompt at runtime):
+1. Go to mysignins.microsoft.com/security-info.
+2. Click "+ Add sign-in method".
+3. Select "App password" (this option ONLY appears if the admin enabled it — on a
+   locked-down tenant it will NOT be in the list, which means app passwords are blocked
+   and you must use OAuth or a relay instead).
+4. Name it, copy the generated password, put it in EMAIL_PASSWORD.
+
+*1.4 Files changed:*
+notify.py            NEW — shared SMTP email module (send_notification).
+security_refresh.py  errors bucket + try/finally send (survives sys.exit); steps 1 & 6 results-checked.
+main.py              errors bucket; appends on job status, submit, and file failures.
+new_alertcomp.py     errors bucket; SOAP fetch wrapped; template skips collected across retries.
+main_ui_auto.py      errors bucket; appends on Security Console and login/run failures.
 Updated July 2026
 **Update 1.0.3 IDCS Login Support (UI Scripts)**
 
@@ -173,7 +236,7 @@ The master key is a single string that encrypts and decrypts your credentials. I
 3.1  Generate a New Key (if you don't have one)
 Open a terminal and run:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-This prints a key like: blahblahblah4647483
+This prints a key like:eclient
 Copy it — you will need it in the next step and to give to any other user who runs these scripts.
 
 3.2  Set the Key Permanently in Windows
@@ -187,7 +250,7 @@ It should print your key back. The 'User' scope means it persists for your Windo
 At any point you can confirm the key is active in the current PowerShell session:
 echo $env:ENV_MASTER_KEY
 
-3.4  Giving the Key to Another User (e.g. ADMIN)
+3.4  Giving the Key to Another User (e.g. (client))
 Copy your key string and have them run the same PowerShell command above on their machine. They must use the exact same key — a different key cannot decrypt your .env.encrypted file.
 NOTE: Keep the key somewhere safe (e.g., a password manager). If you lose it you cannot recover the encrypted file and must re-create the .env from scratch and re-encrypt.
 
@@ -195,14 +258,14 @@ NOTE: Keep the key somewhere safe (e.g., a password manager). If you lose it you
 Before encrypting you need a .env file in the project root with the following variables:
 
 Variable	Description
-FUSION_BASEURL	Oracle Fusion base URL, e.g. https://blank.oraclecloud.com
-FUSION_USER_RESETTER	Email/username of the account that resets passwords . Must have IT Security Manager role.
+FUSION_BASEURL	Oracle Fusion base URL, e.g. https://(client)-test.fa.us6.oraclecloud.com
+FUSION_USER_RESETTER	Email/username of the account that resets passwords (e.g. (client) or (client)). Must have IT Security Manager role.
 FUSION_PASS_RESETTER	Password for the resetter account above.
-FUSION_hcm_LOGIN	HCM scheduler account username (JOB_HCM_Scheduler).
+FUSION_hcm_LOGIN	HCM scheduler account username (eclient_JOB_HCM_Scheduler).
 FUSION_hcm_PASSWORD	HCM scheduler account password.
-FUSION_fin_LOGIN	FIN scheduler account username (JOB_FIN_Scheduler).
+FUSION_fin_LOGIN	FIN scheduler account username (eclient_JOB_FIN_Scheduler).
 FUSION_fin_PASSWORD	FIN scheduler account password.
-FUSION_it_LOGIN	IT scheduler account username (Job_IT_Scheduler).
+FUSION_it_LOGIN	IT scheduler account username (eclient_Job_IT_Scheduler).
 FUSION_it_PASSWORD	IT scheduler account password.
 FUSION_USERS	Comma-separated list of aliases for main.py multi-user support, e.g. hcm,fin,it
 FUSION_USER	Username for main_ui_auto.py browser login.
@@ -396,13 +459,13 @@ screenshot_cleanup.py:          	Deletes old screenshots by age and count. Can b
 
 10.  Required Oracle Roles Per Account
 Account	Required Oracle Role(s)
-FUSION_USER_RESETTER (e.g. ADMIN)	IT Security Manager — to reset passwords via SCIM API.
+FUSION_USER_RESETTER (e.g. (client))	IT Security Manager — to reset passwords via SCIM API.
 Manage Data Access — to post data security records (if also used for data access).
-Job_IT_Scheduler (FUSION_it)	Upload data for Human Capital Management file based import — for HDL loads.
+eclient_Job_IT_Scheduler (FUSION_it)	Upload data for Human Capital Management file based import — for HDL loads.
 ESS Adhoc Request Submission — for submitting LDAP ESS job.
 Manage Data Access — for posting data security records.
-JOB_HCM_Scheduler (FUSION_hcm)	ESS Adhoc Request Submission — for submitting HCM ESS jobs from main.py.
-JOB_FIN_Scheduler (FUSION_fin)	ESS Adhoc Request Submission — for submitting FIN ESS jobs from main.py.
+eclient_JOB_HCM_Scheduler (FUSION_hcm)	ESS Adhoc Request Submission — for submitting HCM ESS jobs from main.py.
+eclient_JOB_FIN_Scheduler (FUSION_fin)	ESS Adhoc Request Submission — for submitting FIN ESS jobs from main.py.
 
 11.  Log Files Reference
 Log File	                            What It Contains
@@ -416,7 +479,7 @@ logs/job_runs.xlsx (Runs_v2)	        Rebuilt audit from backfill_from_log.py (ri
 All rotating log files keep 5 backups at 5 MB each. Timestamps are UTC (ISO-8601 format).
 
 12.  Quick Start Checklist — New Machine Setup
-Use this checklist when setting up on a new machine or giving access to a new user (e.g. Stella):
+Use this checklist when setting up on a new machine or giving access to a new user (e.g. (client)):
 
 1.	Install Python packages:
 pip install requests openpyxl pandas urllib3 python-dateutil playwright cryptography
