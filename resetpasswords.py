@@ -15,7 +15,7 @@ class HCMClient:
     1) Get GUID for each username via GET /hcmCoreSetupApi/scim/Users?filter=userName eq "XXX"
     2) Use each GUID to reset password via PATCH /hcmRestApi/scim/Users/{GUID}
 
-    Auth: FUSION_USER_RESETTER account (ADMIN) — must have IT Security Manager role
+    Auth: FUSION_USER_RESETTER account ((client)) — must have IT Security Manager role
     Passwords: each scheduler account resets to its own password stored in .env
     """
 
