@@ -14,6 +14,8 @@ from logger import get_logger  # custom console+file logger
 from fusion_api import ESSClient, ESSDuplicatePendingError   #custom that contains ESSClient class for communiction with Oracle Rest API
 from job_audit_xlsx import log_job_run_xlsx  # for Excel logging of job runs
 import sys
+import traceback
+from notify import send_notification
 # setup/configuration
 load_env_from_encrypted()   # load .env before reading env vars from encrypted version
     
@@ -367,253 +369,275 @@ def build_client_cache_env_only():
 
 # ------------------------- MAIN RUN FUNCTION -------------------------
 def run() -> int:
-    # NEW: parse optional args
-    args = _parse_args()
-
-    # NEW: collect files to process (scenario / folder / fallback single)
-    excel_paths = _collect_excel_paths(args)
-    if not excel_paths:
-        logger.info("No Excel files found to process.")
-        return 0
-
-    get_client = build_client_cache_env_only()  # unchanged: still uses .env creds (+password file override)
+    errors = []
     total_rows = 0
+    excel_paths = []
+    try:
+        # NEW: parse optional args
+        args = _parse_args()
 
-    for xlsx in excel_paths:
-        try:
-            # Stage each Excel as data.XLSX so your existing reader path stays the same
-            if xlsx.resolve() != DATA_XLSX_PATH.resolve():
-                if not _is_file_stable(xlsx, DATA_STABLE_SEC):
-                    logger.warning(f"File not yet stable (skip this run): {xlsx.name}")
+        # NEW: collect files to process (scenario / folder / fallback single)
+        excel_paths = _collect_excel_paths(args)
+        if not excel_paths:
+            logger.info("No Excel files found to process.")
+            return 0
+
+        get_client = build_client_cache_env_only()  # unchanged: still uses .env creds (+password file override)
+        #total_rows = 0
+
+        for xlsx in excel_paths:
+            try:
+                # Stage each Excel as data.XLSX so your existing reader path stays the same
+                if xlsx.resolve() != DATA_XLSX_PATH.resolve():
+                    if not _is_file_stable(xlsx, DATA_STABLE_SEC):
+                        logger.warning(f"File not yet stable (skip this run): {xlsx.name}")
+                        continue
+                    shutil.copy2(xlsx, DATA_XLSX_PATH)
+                    logger.info(f"Using {xlsx.name} → staged as {DATA_XLSX_PATH.name}")
+                else:
+                    logger.info(f"Using existing {DATA_XLSX_PATH.name}.")
+
+                rows = read_jobs_from_excel(DATA_XLSX_PATH)
+                if not rows:
+                    logger.warning(f"No rows found in {xlsx.name}")
                     continue
-                shutil.copy2(xlsx, DATA_XLSX_PATH)
-                logger.info(f"Using {xlsx.name} → staged as {DATA_XLSX_PATH.name}")
-            else:
-                logger.info(f"Using existing {DATA_XLSX_PATH.name}.")
 
-            rows = read_jobs_from_excel(DATA_XLSX_PATH)
-            if not rows:
-                logger.warning(f"No rows found in {xlsx.name}")
-                continue
+                for i, row in enumerate(rows, start=1):
+                    login = pick_login_from_row(row)   # e.g., ''
+                    client = get_client(login)
+                    logger.info(f"[{login}] {xlsx.name} row {i} selected account")
 
-            for i, row in enumerate(rows, start=1):
-                login = pick_login_from_row(row)   
-                client = get_client(login)
-                logger.info(f"[{login}] {xlsx.name} row {i} selected account")
+                    job_definition_id   = (row.get("jobDefinitionId") or "").strip()
+                    job_package_name    = (row.get("jobPackageName") or "").strip().rstrip("/")
+                    job_definition_name = (row.get("jobDefinitionName") or "").strip()
+                    application         = (row.get("application") or "").strip()
+                    description         = (row.get("Display Name") or "").strip()
+                    class_name          = (row.get("className") or "").strip()
+                    display_name        = description
 
-                job_definition_id   = (row.get("jobDefinitionId") or "").strip()
-                job_package_name    = (row.get("jobPackageName") or "").strip().rstrip("/")
-                job_definition_name = (row.get("jobDefinitionName") or "").strip()
-                application         = (row.get("application") or "").strip()
-                description         = (row.get("Display Name") or "").strip()
-                class_name          = (row.get("className") or "").strip()
-                display_name        = description
+                    # Resolve job by display name if necessary
+                    if (not job_definition_id and not (job_package_name and job_definition_name)) or not application:
+                        try:
+                            resolved = client.resolve_job_by_name(display_name)
+                        except Exception:
+                            resolved = None
+                        if resolved:
+                            application = application or resolved.get("application") or application
+                            if not (job_package_name and job_definition_name):
+                                job_package_name    = job_package_name or resolved.get("jobPackageName") or ""
+                                job_definition_name = job_definition_name or resolved.get("jobDefinitionName") or ""
+                                job_definition_id   = job_definition_id or resolved.get("jobDefinitionId") or job_definition_id
+                            logger.info(
+                                f"Resolved '{display_name}' → app={application or '-'} "
+                                f"pkg={job_package_name or '-'} name={job_definition_name or '-'}"
+                            )
+                        else:
+                            logger.error(
+                                f"Row {i}: cannot resolve jobDefinition fields from Display Name '{display_name}'. Skipping."
+                            )
+                            continue
 
-                # Resolve job by display name if necessary
-                if (not job_definition_id and not (job_package_name and job_definition_name)) or not application:
+                    # --- Prefer jobDefinitionId path over package+name to avoid SYS_AdHocRequest (403) ---
+                    if job_package_name and job_definition_name and not job_definition_id:
+                        job_definition_id = f"JobDefinition://{job_package_name.lstrip('/')}/{job_definition_name}"
+                    if job_definition_id:
+                        job_package_name = ""
+                        job_definition_name = ""
+
+                    # params (kept exactly as your current logic)
+                    params = extract_params(row)
+
+                    # Mirror generic args onto submit.argumentN (and vice versa)
+                    for n in range(1, 30 + 1):
+                        a  = f"argument{n}"
+                        sa = f"submit.argument{n}"
+                        if params.get(a) and not params.get(sa):
+                            params[sa] = params[a]
+                        if params.get(sa) and not params.get(a):
+                            params[a] = params[sa]
+
+                    # OSCS alias fan-out (unchanged)
+                    def _is_oscs_job() -> bool:
+                        jdid = (job_definition_id or "").lower()
+                        pkg  = (job_package_name or "").lower()
+                        name = (job_definition_name or "").lower()
+                        disp = (display_name or "").lower()
+                        return (
+                            "oscs" in disp
+                            or "fndoscs" in name
+                            or "/fnd/applcore/" in jdid
+                            or "/fnd/applcore/" in pkg
+                        )
+
+                    if _is_oscs_job():
+                        OSCS_PARAM_ALIASES = [
+                            "Index Name to Reingest",
+                            "Index Name for recreate",
+                            "indexName",
+                            "argument1",
+                            "submit.argument1",
+                        ]
+                        ix_val = next((params.get(k) for k in OSCS_PARAM_ALIASES if params.get(k)), None)
+                        if ix_val:
+                            for key in ("Index Name for recreate", "indexName", "argument1", "submit.argument1"):
+                                params.setdefault(key, ix_val)
+
+                    if not params:
+                        logger.warning(
+                            f"Row {i}: no parameters extracted for '{display_name}'. "
+                            f"If the job requires prompts, ensure Excel headers match exactly "
+                            f"(e.g., 'Business Unit', 'Ledger') or use 'argument1..30'."
+                        )
+
+                    # Schedule extraction / validation
                     try:
-                        resolved = client.resolve_job_by_name(display_name)
-                    except Exception:
-                        resolved = None
-                    if resolved:
-                        application = application or resolved.get("application") or application
-                        if not (job_package_name and job_definition_name):
-                            job_package_name    = job_package_name or resolved.get("jobPackageName") or ""
-                            job_definition_name = job_definition_name or resolved.get("jobDefinitionName") or ""
-                            job_definition_id   = job_definition_id or resolved.get("jobDefinitionId") or job_definition_id
-                        logger.info(
-                            f"Resolved '{display_name}' → app={application or '-'} "
-                            f"pkg={job_package_name or '-'} name={job_definition_name or '-'}"
-                        )
-                    else:
-                        logger.error(
-                            f"Row {i}: cannot resolve jobDefinition fields from Display Name '{display_name}'. Skipping."
-                        )
+                        schedule = extract_schedule(row)
+                    except Exception as e:
+                        logger.exception(f"Row {i}: invalid schedule: {e}")
                         continue
 
-                # --- Prefer jobDefinitionId path over package+name to avoid SYS_AdHocRequest (403) ---
-                if job_package_name and job_definition_name and not job_definition_id:
-                    job_definition_id = f"JobDefinition://{job_package_name.lstrip('/')}/{job_definition_name}"
-                if job_definition_id:
-                    job_package_name = ""
-                    job_definition_name = ""
+                    logger.info(f"Row {i}: parameters (dict) → {json.dumps(params, ensure_ascii=False)}")
 
-                # params (kept exactly as your current logic)
-                params = extract_params(row)
+                    # duplicate / existing handling (unchanged)
+                    existing_id = None
+                    row_start_date = (row.get("startDate") or "").strip() #new**********
+                    row_argument1  = params.get("argument1", "").strip() #new************
+                    if job_definition_id:
+                        try:
+                            if is_on_demand(schedule): #new ***************
+                                existing_id = client.find_active_request_for_definition(job_definition_id)
+                            else: # SCHEDULED: smart check — all three must match to be duplicate new***********
+                                existing_id = client.find_active_scheduled_request(
+                                    job_definition_id,
+                                    start_date=row_start_date,
+                                    argument1=row_argument1,
+                                ) #this section new**********
+                        except Exception:
+                            existing_id = None
 
-                # Mirror generic args onto submit.argumentN (and vice versa)
-                for n in range(1, 30 + 1):
-                    a  = f"argument{n}"
-                    sa = f"submit.argument{n}"
-                    if params.get(a) and not params.get(sa):
-                        params[sa] = params[a]
-                    if params.get(sa) and not params.get(a):
-                        params[a] = params[sa]
-
-                # OSCS alias fan-out (unchanged)
-                def _is_oscs_job() -> bool:
-                    jdid = (job_definition_id or "").lower()
-                    pkg  = (job_package_name or "").lower()
-                    name = (job_definition_name or "").lower()
-                    disp = (display_name or "").lower()
-                    return (
-                        "oscs" in disp
-                        or "fndoscs" in name
-                        or "/fnd/applcore/" in jdid
-                        or "/fnd/applcore/" in pkg
-                    )
-
-                if _is_oscs_job():
-                    OSCS_PARAM_ALIASES = [
-                        "Index Name to Reingest",
-                        "Index Name for recreate",
-                        "indexName",
-                        "argument1",
-                        "submit.argument1",
-                    ]
-                    ix_val = next((params.get(k) for k in OSCS_PARAM_ALIASES if params.get(k)), None)
-                    if ix_val:
-                        for key in ("Index Name for recreate", "indexName", "argument1", "submit.argument1"):
-                            params.setdefault(key, ix_val)
-
-                if not params:
-                    logger.warning(
-                        f"Row {i}: no parameters extracted for '{display_name}'. "
-                        f"If the job requires prompts, ensure Excel headers match exactly "
-                        f"(e.g., 'Business Unit', 'Ledger') or use 'argument1..30'."
-                    )
-
-                # Schedule extraction / validation
-                try:
-                    schedule = extract_schedule(row)
-                except Exception as e:
-                    logger.exception(f"Row {i}: invalid schedule: {e}")
-                    continue
-
-                logger.info(f"Row {i}: parameters (dict) → {json.dumps(params, ensure_ascii=False)}")
-
-                # duplicate / existing handling (unchanged)
-                existing_id = None
-                row_start_date = (row.get("startDate") or "").strip() #new**********
-                row_argument1  = params.get("argument1", "").strip() #new************
-                if job_definition_id:
-                    try:
-                        if is_on_demand(schedule): #new ***************
-                            existing_id = client.find_active_request_for_definition(job_definition_id)
-                        else: # SCHEDULED: smart check — all three must match to be duplicate new***********
-                            existing_id = client.find_active_scheduled_request(
-                                job_definition_id,
-                                start_date=row_start_date,
-                                argument1=row_argument1,
-                            ) #this section new**********
-                    except Exception:
-                        existing_id = None
-
-                if existing_id:
-                    logger.info(
-                        f"Existing active request for {job_definition_id}: request_id={existing_id} — not submitting a duplicate."
-                    )
-                    if is_on_demand(schedule):
-                        if DRY_RUN:
-                            logger.info("[DRY RUN] Would poll the existing request to completion (skipped).")
+                    if existing_id:
+                        logger.info(
+                            f"Existing active request for {job_definition_id}: request_id={existing_id} — not submitting a duplicate."
+                        )
+                        if is_on_demand(schedule):
+                            if DRY_RUN:
+                                logger.info("[DRY RUN] Would poll the existing request to completion (skipped).")
+                            else:
+                                final = client.poll_until_complete(
+                                    existing_id,
+                                    poll_seconds=int(get_env("DUPLICATE_POLL_INTERVAL_SECONDS", ENV_PREFIX) or "10"),
+                                    timeout_seconds=int(get_env("DUPLICATE_POLL_TIMEOUT_SECONDS", ENV_PREFIX) or "300"),
+                                    logger=logger,
+                                )
+                                final_status = final.get("Status") or final.get("status") or final
+                                logger.info(
+                                    f"[ON-DEMAND EXISTING] request_id={existing_id} def={job_definition_id} final_status={final_status}"
+                                )
+                                if str(final_status).upper() not in ("SUCCEEDED", "SUCCESS"):
+                                    errors.append(
+                                        f"Job '{job_definition_name or display_name}' "
+                                        f"request_id={existing_id} final_status={final_status}"
+                                    )
+                                # >>> AUDIT <<< existing on-demand, final status
+                                try:
+                                    job_name_for_audit = job_definition_name or display_name or "UnknownJob"
+                                    log_job_run_xlsx(
+                                        job_name=job_name_for_audit,
+                                        request_id=str(existing_id),
+                                        status=str(final_status),
+                                        fusion_alias=str(login),
+                                        notes="existing_on_demand"
+                                    )
+                                except Exception:
+                                    pass
                         else:
-                            final = client.poll_until_complete(
-                                existing_id,
-                                poll_seconds=int(get_env("DUPLICATE_POLL_INTERVAL_SECONDS", ENV_PREFIX) or "10"),
-                                timeout_seconds=int(get_env("DUPLICATE_POLL_TIMEOUT_SECONDS", ENV_PREFIX) or "300"),
-                                logger=logger,
-                            )
+                            logger.info(f"[SCHEDULED] Another schedule/run already active for def={job_definition_id} startDate={row_start_date} argument1={row_argument1 or '-'}; skipping submit.") #this is new one**********
+                            #logger.info(f"[SCHEDULED] Another schedule/run already active for def={job_definition_id}; skipping submit.")   this is old one
+                        continue
+
+                    # submit (unchanged)
+                    try:
+                        req_id = client.submit(
+                            job_definition_id,
+                            application,
+                            params,
+                            schedule if not is_on_demand(schedule) else {},
+                            description=description,
+                            dry_run=DRY_RUN,
+                            logger=logger,
+                            job_package_name=job_package_name or None,
+                            job_definition_name=job_definition_name or None,
+                            class_name=class_name or None,
+                        )
+
+                        if DRY_RUN:
+                            if is_on_demand(schedule):
+                                logger.info("[DRY RUN] Would poll until completion for on-demand job (skipped).")
+                            else:
+                                logger.info("[DRY RUN] Would log scheduled parent requestId (skipped).")
+                            continue
+
+                        if is_on_demand(schedule):
+                            final = client.poll_until_complete(req_id, logger=logger)
                             final_status = final.get("Status") or final.get("status") or final
                             logger.info(
-                                f"[ON-DEMAND EXISTING] request_id={existing_id} def={job_definition_id} final_status={final_status}"
+                                f"[ON-DEMAND] request_id={req_id} pkg={job_package_name or '-'} "
+                                f"name={job_definition_name or '-'} final_status={final_status}"
                             )
-                            # >>> AUDIT <<< existing on-demand, final status
+                            if str(final_status).upper() not in ("SUCCEEDED", "SUCCESS"):
+                                errors.append(
+                                    f"Job '{job_definition_name or display_name}' "
+                                    f"request_id={req_id} final_status={final_status}"
+                                )
+                            # >>> AUDIT <<< on-demand, final status
                             try:
                                 job_name_for_audit = job_definition_name or display_name or "UnknownJob"
                                 log_job_run_xlsx(
                                     job_name=job_name_for_audit,
-                                    request_id=str(existing_id),
+                                    request_id=str(req_id),
                                     status=str(final_status),
                                     fusion_alias=str(login),
-                                    notes="existing_on_demand"
+                                    notes="on_demand"
                                 )
                             except Exception:
                                 pass
-                    else:
-                        logger.info(f"[SCHEDULED] Another schedule/run already active for def={job_definition_id} startDate={row_start_date} argument1={row_argument1 or '-'}; skipping submit.") #this is new one**********
-                        #logger.info(f"[SCHEDULED] Another schedule/run already active for def={job_definition_id}; skipping submit.")   this is old one
-                    continue
-
-                # submit (unchanged)
-                try:
-                    req_id = client.submit(
-                        job_definition_id,
-                        application,
-                        params,
-                        schedule if not is_on_demand(schedule) else {},
-                        description=description,
-                        dry_run=DRY_RUN,
-                        logger=logger,
-                        job_package_name=job_package_name or None,
-                        job_definition_name=job_definition_name or None,
-                        class_name=class_name or None,
-                    )
-
-                    if DRY_RUN:
-                        if is_on_demand(schedule):
-                            logger.info("[DRY RUN] Would poll until completion for on-demand job (skipped).")
                         else:
-                            logger.info("[DRY RUN] Would log scheduled parent requestId (skipped).")
+                            logger.info(
+                                f"[SCHEDULED] parent_request_id={req_id} pkg={job_package_name or '-'} "
+                                f"name={job_definition_name or '-'} schedule_created"
+                            )
+                            # >>> AUDIT <<< scheduled parent request id
+                            try:
+                                job_name_for_audit = job_definition_name or display_name or "UnknownJob"
+                                log_job_run_xlsx(
+                                    job_name=job_name_for_audit,
+                                    request_id=str(req_id),
+                                    status="SCHEDULED",
+                                    fusion_alias=str(login),
+                                    notes="scheduled_parent"
+                                )
+                            except Exception:
+                                pass
+
+                    except ESSDuplicatePendingError:
+                        logger.warning(f"ESS-01050: another request is already pending for {job_definition_id}.")
                         continue
+                    except Exception as e:
+                        logger.exception(f"Row {i}: submit failed: {e}")
+                        errors.append(f"Row {i} — job '{display_name}' submit failed: {e}")
 
-                    if is_on_demand(schedule):
-                        final = client.poll_until_complete(req_id, logger=logger)
-                        final_status = final.get("Status") or final.get("status") or final
-                        logger.info(
-                            f"[ON-DEMAND] request_id={req_id} pkg={job_package_name or '-'} "
-                            f"name={job_definition_name or '-'} final_status={final_status}"
-                        )
-                        # >>> AUDIT <<< on-demand, final status
-                        try:
-                            job_name_for_audit = job_definition_name or display_name or "UnknownJob"
-                            log_job_run_xlsx(
-                                job_name=job_name_for_audit,
-                                request_id=str(req_id),
-                                status=str(final_status),
-                                fusion_alias=str(login),
-                                notes="on_demand"
-                            )
-                        except Exception:
-                            pass
-                    else:
-                        logger.info(
-                            f"[SCHEDULED] parent_request_id={req_id} pkg={job_package_name or '-'} "
-                            f"name={job_definition_name or '-'} schedule_created"
-                        )
-                        # >>> AUDIT <<< scheduled parent request id
-                        try:
-                            job_name_for_audit = job_definition_name or display_name or "UnknownJob"
-                            log_job_run_xlsx(
-                                job_name=job_name_for_audit,
-                                request_id=str(req_id),
-                                status="SCHEDULED",
-                                fusion_alias=str(login),
-                                notes="scheduled_parent"
-                            )
-                        except Exception:
-                            pass
+                    total_rows += 1
 
-                except ESSDuplicatePendingError:
-                    logger.warning(f"ESS-01050: another request is already pending for {job_definition_id}.")
-                    continue
-                except Exception as e:
-                    logger.exception(f"Row {i}: submit failed: {e}")
-
-                total_rows += 1
-
-        except Exception as e:
-            logger.exception(f"Failed processing file: {xlsx.name} → {e}")
-
+            except Exception as e:
+                logger.exception(f"Failed processing file: {xlsx.name} → {e}")
+                errors.append(f"File '{xlsx.name}' failed: {e}")
+    except Exception:
+        errors.append("CRASHED: " + traceback.format_exc())
+    finally:
+        if errors:
+            tag = "[DRY RUN] " if DRY_RUN else ""
+            subject = f"{tag}[{ENV_PREFIX or 'default'}] main - COMPLETED WITH ERRORS"
+            send_notification(subject, "\n".join(errors)) 
     logger.info(f"Processed {total_rows} rows across {len(excel_paths)} file(s).")
     return 0
 
