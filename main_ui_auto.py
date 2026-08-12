@@ -9,7 +9,9 @@ from contextlib import suppress  # for suppressing
 from urllib.parse import urlparse  # for generating consistent browser
 from playwright.sync_api import Playwright, sync_playwright, TimeoutError as PWTimeout  # for browser automation
 from login import get_login_page, build_login_config
-from crypto_env import load_env_from_encrypted, get_env, _get_env_prefix # dotenv for loading env variables from .env file into python but from the encypted version
+from crypto_env import load_env_from_encrypted, get_env, _get_env_prefix
+import traceback
+from notify import send_notification # dotenv for loading env variables from .env file into python but from the encypted version
 load_env_from_encrypted()   # load .env before reading env vars from encrypted version
 ENV_PREFIX = _get_env_prefix()
 
@@ -59,7 +61,7 @@ NOTIFICATION_CATEGORIES = ["ADMINISTRATORS", "CONTRACTORS", "DEFAULT"]
 
 # Build a unique persistent profile dir per instance (and user)
 parsed = urlparse(INSTANCE_URL)
-host = (parsed.hostname or "fusion").replace(".", "-")  
+host = (parsed.hostname or "fusion").replace(".", "-")  # e.g., ejvv-test-fa-us6-oraclecloud-com
 user = FUSION_USER.split("@")[0] if "@" in FUSION_USER else FUSION_USER or "user"
 PROFILE_DIR = f".pw-profile-{host}-{user}"
 
@@ -400,6 +402,7 @@ def disable_category_notifications(page, category_name: str, pause_ms=PAUSE) -> 
 # -----------------------------
 
 def run(playwright: Playwright) -> None:
+    errors = []
     context = playwright.chromium.launch_persistent_context(
         user_data_dir=PROFILE_DIR,
         headless=False,
@@ -471,7 +474,7 @@ def run(playwright: Playwright) -> None:
     # Handle the Email Textbox
     page1.get_by_role("textbox", name="Test Notification Email").click()
     page1.get_by_role("textbox", name="Test Notification Email").press("ControlOrMeta+a")
-    page1.get_by_role("textbox", name="Test Notification Email").fill("Oracle@oracle.com")
+    page1.get_by_role("textbox", name="Test Notification Email").fill("Oracle@(client).ca.gov")
     take_screenshot(page1, "notification_email_filled")
 
     # Click OK on the email popup
@@ -521,12 +524,16 @@ def run(playwright: Playwright) -> None:
             )
     except Exception as e:
         log_and_print(f"Security Console flow skipped due to error: {e}", level="warning")
+        errors.append(f"Security Console flow failed: {e}")
 
 
     # Success + cleanup
     log_and_print("Email notifications successfully disabled (or navigated in dry run mode)!")
     cleanup_screenshots(retain_days=7, keep_latest=200)
     log_and_print("Screenshot cleanup complete.")
+    if errors:
+        subject = f"[{ENV_PREFIX or 'default'}] main_ui_auto — COMPLETED WITH ERRORS"
+        send_notification(subject, "\n".join(errors))
 
     context.close()
 
@@ -537,5 +544,9 @@ if __name__ == "__main__":
             run(p)
         except Exception as e:
             log_and_print(f"Error occurred: {e}", level="error")
-            # Not attempting screenshot here because 'page' is scoped inside run()
+            with suppress(Exception):
+                send_notification(
+                    f"[{ENV_PREFIX or 'default'}] main_ui_auto — TERMINATED",
+                    "CRASHED: " + traceback.format_exc()
+                )
             raise
